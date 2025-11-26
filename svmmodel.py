@@ -12,6 +12,8 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import time
+from scipy import sparse
+from sklearn.impute import SimpleImputer
 
 from fairlearn.metrics import (
     MetricFrame,
@@ -25,6 +27,8 @@ from fairlearn.metrics import (
     true_negative_rate,
     false_negative_rate
 )
+
+from fairlearn.postprocessing import ThresholdOptimizer
 
 
 def get_pairwise_metrics(y_true, y_pred, sensitive_features):
@@ -108,12 +112,8 @@ def get_pairwise_metrics(y_true, y_pred, sensitive_features):
         'Group 2': group_val_2,
         'Selection Rate 1': sr1,
         'Selection Rate 2': sr2,
-        # 'Pairwise Manual DP Ratio': manual_DP_ratio,
-        # 'Pairwise Manual DP Difference': manual_DP_diff,
         'Pairwise DP Ratio': DP_ratio,
         'Pairwise DP Difference': DP_diff,
-        # 'Pairwise Manual Eq Odds Ratio': manual_eq_odds_ratio,
-        # 'Pairwise Manual Eq Odds Difference': manual_eq_odds_difference,
         'Pairwise Eq Odds Ratio': eq_odds_ratio,
         'Pairwise Eq Odds Difference': eq_odds_difference
     })
@@ -134,7 +134,7 @@ def get_one_vs_rest_metrics(y_true, y_pred, sensitive_features):
 
   unique_group_values = [x for x in unique_group_values if str(x) != 'nan' ]
 
-  print(unique_group_values)
+  print(f" Unique groups for in vs out: {unique_group_values}")
 
   one_vs_rest_results = []
 
@@ -201,7 +201,9 @@ def get_one_vs_rest_metrics(y_true, y_pred, sensitive_features):
     print("*"*40)
     print("\n")
 
+    assert(df['y_true'].shape[0] == df['y_pred'].shape[0])
 
+    assert(df['y_true'].shape[0] == len(target_filtered_attribute))
 
     eq_odds_ratio = equalized_odds_ratio(df['y_true'], df['y_pred'], sensitive_features=target_filtered_attribute)
 
@@ -219,7 +221,7 @@ def get_one_vs_rest_metrics(y_true, y_pred, sensitive_features):
         'One Vs Rest DP Ratio': DP_ratio,
         'One Vs Rest DP Difference': DP_diff,
         'One Vs Rest Eq Odds Ratio': eq_odds_ratio,
-        'One Vs Rest Eq Odds Difference': equalized_odds_difference,
+        'One Vs Rest Eq Odds Difference': eq_odds_difference,
     })
 
   return one_vs_rest_results
@@ -289,6 +291,7 @@ def main():
   y_change = (X_original['change'] == 'Ch').values
   y_diabetesMed = (X_original['diabetesMed'] == 'Yes').values
 
+  print(f"ENCODING CHANGE AND DIABETES. OF TYPES: {type(y_change[0].item())} AND  {type(y_diabetesMed[0].item())} RESPECTIVELY")
   # this is a list of indexes for entire dataset rows ([0, 1, 2..... num_rows-1])
   index_array = np.arange(X_preprocessed.shape[0])
 
@@ -302,17 +305,6 @@ def main():
   sensitive_test = {attr: vals.iloc[test_indices].reset_index(drop=True)
                     for attr, vals in protected_series.items()}
 
-  # print("training sizes")
-  # print((X_train.shape[0]))
-  # print(len(Y_change_train))
-  # print(len(Y_diabetesMed_train))
-
-  # print(type(X_train))
-  # print((X_train))
-  # 1. base svm, no effort to implement measures to ensure fairness
-
-  # print(X_cols)
-  # gamma{‘scale’, ‘auto’} or float, default=’scale’
   # Kernel coefficient for ‘rbf’, ‘poly’ and ‘sigmoid’.
   start = time.time()
   changeSVM = LinearSVC(C=1, max_iter=1000, dual='auto', random_state=42)
@@ -330,6 +322,7 @@ def main():
   diabetesMedSVMAccuracy = accuracy_score(diabetesMedPredictions, Y_diabetesMed_test)
   diabetesMedTime = time.time() - start
 
+
   print("Unique diabetesMedPredictions predictions:", np.unique(diabetesMedPredictions))
 
   print(f"PREDICTION SHAPE {diabetesMedPredictions.shape[0]}")
@@ -341,14 +334,127 @@ def main():
   print("Prediction diabetesMedPredictions distribution:", pd.Series(diabetesMedPredictions).value_counts())
 
   print("Prediction changePredictions distribution:", pd.Series(changePredictions).value_counts())
+  
+
+  ##############################################################################
+  # FAIRNESS STEPS
+  # use threshold optimizer to perform post processing mitigation 
+  # https://fairlearn.org/v0.10/api_reference/generated/fairlearn.postprocessing.ThresholdOptimizer.html
+
+  # a dictionary for the predictions of each 12 models. 12 because we have 3 protected attributes (race, age, gender), 2 target attributes we are predicting (med change vs diabetes meds give) and 2 constraints (demo parity and eq odds) 3*2*2
+
+  imputer = SimpleImputer(strategy='mean')
+  X_train = imputer.fit_transform(X_train)
+  X_test = imputer.transform(X_test)
+
+  print(f"X_train is sparse: {sparse.issparse(X_train)}")
+  print(f"X_test is sparse: {sparse.issparse(X_test)}")
+  print(f"Y_change_train is sparse: {sparse.issparse(Y_change_train)}")
+
+  if sparse.issparse(X_train):
+    X_train_dense = X_train.toarray()
+  else:
+    X_train_dense = X_train
+
+  if sparse.issparse(X_test):
+    X_test_dense = X_test.toarray()
+  else:
+    X_test_dense = X_test
+
+  fairness_optimized_predictions = {}
+  fairness_optimized_accuracy = {}
+  constraint_strategies = ['demographic_parity', 'equalized_odds']
+
+  # MAIN LOOP
+  for attr in sensitive_train:
+    curr_sensitive_train_col = sensitive_train[attr]
+    curr_sensitive_test_col = sensitive_test[attr]
+
+    # hacky code to cover degenerate labels
+    if attr == 'gender':
+      mode_value = curr_sensitive_train_col.mode()[0]
+      print(f"REPLACING Unknown/Invalid with mode {mode_value}")
+      curr_sensitive_train_col.replace('Unknown/Invalid', mode_value, inplace=True)
+      curr_sensitive_test_col.replace('Unknown/Invalid', mode_value, inplace=True)
+
+      sensitive_test[attr] = curr_sensitive_test_col
+      
+
+    # if there are nans in the sensitive attribute column, just fill with most common one
+    if (curr_sensitive_train_col.isna().any() or curr_sensitive_test_col.isna().any()):
+      mode_value = curr_sensitive_train_col.mode()[0]
+      print(f"MODE VALUE FOR ATTR {attr} IS {mode_value}")
+      curr_sensitive_train_col = curr_sensitive_train_col.fillna(mode_value)
+      curr_sensitive_test_col = curr_sensitive_test_col.fillna(mode_value)
+
+    print(f"dense x train rows: {X_train_dense.shape[0]}")
+    print(f"num rows for attr {attr}: {curr_sensitive_train_col.shape[0]}")
+    assert(X_train_dense.shape[0] == curr_sensitive_train_col.shape[0])
+    assert(X_train_dense.shape[0] == Y_change_train.shape[0])
+
+    # Convert train sensitive attr from sparse to dense if needed
+    if hasattr(curr_sensitive_train_col, 'toarray'):
+        curr_sensitive_train_col = curr_sensitive_train_col.toarray().ravel()
+    else:
+        curr_sensitive_train_col = curr_sensitive_train_col.values
+
+    # Convert test sensitive attr from sparse to dense if needed
+    if hasattr(curr_sensitive_test_col, 'toarray'):
+        curr_sensitive_test_col = curr_sensitive_test_col.toarray().ravel()
+    else:
+        curr_sensitive_test_col = curr_sensitive_test_col.values
+
+    print(f"Y_change_train is type: {type(Y_change_train[0].item())}")
+    
+    for curr_strategy in constraint_strategies:
+      
+      ######################### CHANGE SVM ################################
+      fair_changeSVM = ThresholdOptimizer(estimator=changeSVM, constraints=curr_strategy)
+
+      # ISSUE WITH SPARSE DATA
+      fair_changeSVM.fit(X_train_dense, Y_change_train, sensitive_features=curr_sensitive_train_col)
+
+      fair_changePredictions = fair_changeSVM.predict(X_test_dense, sensitive_features = curr_sensitive_test_col)
+
+      fairness_optimized_predictions[f"{attr}_{curr_strategy}_change"] = fair_changePredictions
+
+      fairness_optimized_accuracy[f"{attr}_{curr_strategy}_change"] = accuracy_score(fair_changePredictions, Y_change_test)
+
+      print(f"FINISHED PREDICTION FOR ATTR {attr} with strategy {curr_strategy} for Med Change")
+
+      ############################### MED SVM ################################
+      fair_diabetesMedSVM = ThresholdOptimizer(estimator=diabetesMedSVM, constraints=curr_strategy)
+
+      fair_diabetesMedSVM.fit(X_train_dense, Y_change_train, sensitive_features=curr_sensitive_train_col)
+
+      fair_diabetesPredictions = fair_diabetesMedSVM.predict(X_test_dense, sensitive_features = curr_sensitive_test_col)
+
+      fairness_optimized_predictions[f"{attr}_{curr_strategy}_med_given"] = fair_changePredictions
+
+      fairness_optimized_accuracy[f"{attr}_{curr_strategy}_med_given"] = accuracy_score(fair_diabetesPredictions, Y_diabetesMed_test)
+
+      print(f"FINISHED PREDICTION FOR ATTR {attr} with strategy {curr_strategy} for Med Given")
+
+  ##############################################################################
+  print(fairness_optimized_predictions)
+  assert(len(fairness_optimized_predictions) == 12)
+
+  print(fairness_optimized_accuracy)
+  assert(len(fairness_optimized_accuracy) == 12)
+
+
+
+
+  ##############################################################################
+  # FINAL BASE MEASUREMENTS 
 
   for attr in sensitive_test: # race, age, gender
     print("="*60)
+    print(f"BASE MEASUREMENT")
+    print("="*60)
+
     print(f"Sensitive attribute: {attr}")
     curr_sensitive_col = sensitive_test[attr]
-
-    # print(type(curr_sensitive_col))
-    # return
 
     # calculate pairwise and one vs many comparision for DP ratio, DP difference and Eq Odds for med change
     print("Calculating for med change: ")
@@ -360,52 +466,21 @@ def main():
     print("Calculating for diabetes med given: ")
     pairwise_diabetes_med_given = pd.DataFrame(get_pairwise_metrics(Y_diabetesMed_test, diabetesMedPredictions, curr_sensitive_col))
     # get one vs rest
-    one_vs_rest_diabetes_med_given =pd.DataFrame(get_one_vs_rest_metrics(Y_diabetesMed_test, diabetesMedPredictions, curr_sensitive_col))
+    one_vs_rest_diabetes_med_given = pd.DataFrame(get_one_vs_rest_metrics(Y_diabetesMed_test, diabetesMedPredictions, curr_sensitive_col))
 
-    # combine all 4 data frames
+    # combine all data frames for med change
     med_change_results = pd.concat([pairwise_med_change, one_vs_rest_med_change], ignore_index=True, sort=False)
 
+    # combine all data frames for diabetes med given
     diabetes_med_given_results = pd.concat([pairwise_diabetes_med_given, one_vs_rest_diabetes_med_given], ignore_index=True, sort=False)
 
     # write my results to file
-    # filename_attr = f"base_{attr}.txt"
     med_change_filename = f"base_{attr}_medchange.csv"
     med_change_results.to_csv(med_change_filename, index=False)
 
     diabetes_med_given_filename = f"base_{attr}_diabetesmed.csv"
     diabetes_med_given_results.to_csv(diabetes_med_given_filename, index=False)
-
-
-    '''
-    with open(filename_attr, 'w') as f:
-
-
-
-          f.write("*"*50)
-          f.write("\n")
-          f.write(f"Pairwise med change for {attr}")
-          f.write(pairwise_med_change.to_string())
-          f.write("\n")
-
-          f.write("*"*50)
-          f.write("\n")
-          f.write(f"One vs Rest med change for {attr}")
-          f.write(one_vs_rest_med_change.to_string())
-          f.write("\n")
-
-          f.write("*"*50)
-          f.write("\n")
-          f.write(f"Pairwise diabetes med given for {attr}")
-          f.write(pairwise_diabetes_med_given.to_string())
-          f.write("\n")
-
-          f.write("*"*50)
-          f.write("/n")
-          f.write(f"One vs Rest diabetes med given for {attr}")
-          f.write(one_vs_rest_diabetes_med_given.to_string())
-          f.write("\n")
-          '''
-
+    print("="*60)
 
   print("-"*50)
   print("BASE ACCURACIES")
@@ -416,6 +491,63 @@ def main():
   print(f"DIABETES MED TIME: {diabetesMedTime}")
   print(f"Accuracy of diabetesMed SVM: {diabetesMedSVMAccuracy}")
 
+  ##############################################################################
+
+  ##############################################################################
+  # FINAL FAIRNESS ADJUSTED MEASUREMENTS 
+
+  strategies = ["demographic_parity", "equalized_odds"]
+
+  print("="*60)
+  print(f"FAIRNESS ADJUSTED MEASUREMENT")
+  print("="*60)
+  for attr in sensitive_train:
+    curr_fairness_sensitive_col = sensitive_test[attr]
+
+    for curr_strategy in strategies:
+      print(f"Sensitive attribute: {attr} and Current Strategy: {curr_strategy}")
+
+      attr_strategy_change_str = f"{attr}_{curr_strategy}_change"
+
+      attr_strategy_med_given_str = f"{attr}_{curr_strategy}_med_given"
+
+      assert(len(Y_change_test) == len(fairness_optimized_predictions[attr_strategy_change_str]))
+
+      assert(len(Y_change_test) == len(fairness_optimized_predictions[attr_strategy_med_given_str]))
+    
+      # calculate pairwise and one vs many comparision for DP ratio, DP difference and Eq Odds for med change
+
+      print(f"Calculating: {attr_strategy_change_str}")
+
+      pairwise_med_change = pd.DataFrame(get_pairwise_metrics(Y_change_test, fairness_optimized_predictions[attr_strategy_change_str], curr_fairness_sensitive_col))
+
+      # get one vs rest
+      one_vs_rest_med_change =pd.DataFrame(get_one_vs_rest_metrics(Y_change_test, fairness_optimized_predictions[attr_strategy_change_str], curr_fairness_sensitive_col))
+
+      # calculate pairwise and one vs many comparision for DP ratio, DP difference and Eq Odds for diabetes med given
+      print(f"Calculating: {attr_strategy_med_given_str}")
+
+      pairwise_diabetes_med_given = pd.DataFrame(get_pairwise_metrics(Y_diabetesMed_test, fairness_optimized_predictions[attr_strategy_med_given_str], curr_fairness_sensitive_col))
+
+      # get one vs rest
+      one_vs_rest_diabetes_med_given = pd.DataFrame(get_one_vs_rest_metrics(Y_diabetesMed_test, fairness_optimized_predictions[attr_strategy_med_given_str], curr_fairness_sensitive_col))
+
+      # combine all data frames for med change
+      med_change_results = pd.concat([pairwise_med_change, one_vs_rest_med_change], ignore_index=True, sort=False)
+
+      # combine all data frames for diabetes med given
+      diabetes_med_given_results = pd.concat([pairwise_diabetes_med_given, one_vs_rest_diabetes_med_given], ignore_index=True, sort=False)
+
+      # write my results to file
+      med_change_filename = f"{attr_strategy_change_str}.csv"
+      med_change_results.to_csv(med_change_filename, index=False)
+
+      diabetes_med_given_filename = f"{attr_strategy_med_given_str}.csv"
+      diabetes_med_given_results.to_csv(diabetes_med_given_filename, index=False)
+
+      print("="*60)
+
+  ##############################################################################
 
 if __name__ == "__main__":
   main()
