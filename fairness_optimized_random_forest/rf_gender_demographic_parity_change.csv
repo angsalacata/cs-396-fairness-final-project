@@ -1,0 +1,4 @@
+Group 1,Group 2,Selection Rate 1,Selection Rate 2,Pairwise DP Ratio,Pairwise DP Difference,Pairwise Eq Odds Ratio,Pairwise Eq Odds Difference,Target Group,Target Selection Rate,Rest Selection Rate,One Vs Rest DP Ratio,One Vs Rest DP Difference,One Vs Rest Eq Odds Ratio,One Vs Rest Eq Odds Difference
+Female,Male,0.4521580547112462,0.4676846590909091,0.966801125335512,0.015526604379662912,0.0,0.011659113341966787,,,,,,,
+,,,,,,,,Female,0.4521580547112462,0.4676846590909091,0.966801125335512,0.015526604379662912,0.0,0.011659113341966787
+,,,,,,,,Male,0.4676846590909091,0.4521580547112462,0.966801125335512,0.015526604379662912,0.0,0.011659113341966787
