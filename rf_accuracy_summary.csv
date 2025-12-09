@@ -1,0 +1,15 @@
+Description,Accuracy
+Accuracy for medication change prediction Base RF,0.997870946609892
+Accuracy for diabetes med prescribed prediction Base RF,0.9995086799868982
+Accuracy for medication change prediction RF control for race -- demographic parity,0.9946937438584998
+Accuracy for diabetes med prescribed prediction RF control for race -- demographic parity,0.9990173599737963
+Accuracy for medication change prediction RF control for race -- equalized odds,0.9965280052407468
+Accuracy for diabetes med prescribed prediction RF control for race -- equalized odds,0.9992466426465771
+Accuracy for medication change prediction RF control for gender -- demographic parity,0.9964297412381264
+Accuracy for diabetes med prescribed prediction RF control for gender -- demographic parity,0.9992793973141173
+Accuracy for medication change prediction RF control for gender -- equalized odds,0.9974451359318703
+Accuracy for diabetes med prescribed prediction RF control for gender -- equalized odds,0.9993449066491975
+Accuracy for medication change prediction RF control for age -- demographic parity,0.9974778905994104
+Accuracy for diabetes med prescribed prediction RF control for age -- demographic parity,0.999475925319358
+Accuracy for medication change prediction RF control for age -- equalized odds,0.9979364559449722
+Accuracy for diabetes med prescribed prediction RF control for age -- equalized odds,0.999475925319358
