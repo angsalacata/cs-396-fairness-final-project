@@ -1,0 +1,533 @@
+from operator import eq
+from itertools import combinations
+import sklearn as sk
+# CHANGED: Import MLPClassifier instead of LogisticRegression
+from sklearn.neural_network import MLPClassifier
+from ucimlrepo import fetch_ucirepo
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.preprocessing import LabelEncoder, StandardScaler, OneHotEncoder
+from sklearn.compose import ColumnTransformer
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import time
+from scipy import sparse
+from sklearn.impute import SimpleImputer
+
+from fairlearn.metrics import (
+    MetricFrame,
+    demographic_parity_difference,
+    demographic_parity_ratio,
+    equalized_odds_difference,
+    equalized_odds_ratio,
+    selection_rate,
+    true_positive_rate,
+    false_positive_rate,
+    true_negative_rate,
+    false_negative_rate
+)
+
+# NOTE: ThresholdOptimizer removed for ROC-style post-processing
+
+def get_pairwise_metrics(y_true, y_pred, sensitive_features):
+    df = pd.DataFrame({
+        'y_true': y_true,
+        'y_pred': y_pred,
+        'protected_attributes': sensitive_features
+    })
+
+    unique_group_values = (df['protected_attributes'].unique())
+    unique_group_values = [x for x in unique_group_values if str(x) != 'nan' ]
+
+    print(unique_group_values)
+
+    pairwise_results = []
+
+    for group_val_1, group_val_2 in combinations(unique_group_values, 2):
+        mask = (df['protected_attributes'] == group_val_1) | (df['protected_attributes'] == group_val_2)
+        filtered_df = df[mask]
+
+        group_1_df = df[df['protected_attributes'] == group_val_1]
+        group_2_df = df[df['protected_attributes'] == group_val_2]
+
+        #######################
+        # Calculation for Demographic Parity Ratio and Difference
+        sr1 = selection_rate(group_1_df['y_true'], group_1_df['y_pred'])
+        sr2 = selection_rate(group_2_df['y_true'], group_2_df['y_pred'])
+
+        manual_DP_ratio = min(sr1, sr2)/max(sr1, sr2) if max(sr1, sr2) > 0 else 0
+        manual_DP_diff = abs(sr1-sr2)
+
+        DP_ratio = demographic_parity_ratio(filtered_df['y_true'], filtered_df['y_pred'], sensitive_features=filtered_df['protected_attributes'])
+        DP_diff = demographic_parity_difference(filtered_df['y_true'], filtered_df['y_pred'], sensitive_features=filtered_df['protected_attributes'])
+        #######################
+
+        #######################
+        # Calculation for Equalized Odds Ratio and Difference
+        group_1_tpr = true_positive_rate(group_1_df['y_true'], group_1_df['y_pred'], pos_label=1)
+        group_2_tpr = true_positive_rate(group_2_df['y_true'], group_2_df['y_pred'], pos_label=1)
+
+        group_1_fpr = false_positive_rate(group_1_df['y_true'], group_1_df['y_pred'], pos_label=1)
+        group_2_fpr = false_positive_rate(group_2_df['y_true'], group_2_df['y_pred'], pos_label=1)
+
+        tpr_ratio = min(group_1_tpr, group_2_tpr)/max(group_1_tpr, group_2_tpr) if max(group_1_tpr, group_2_tpr) > 0 else 0
+        fpr_ratio = min(group_1_fpr, group_2_fpr)/max(group_1_fpr, group_2_fpr) if max(group_1_fpr, group_2_fpr) > 0 else 0
+
+        manual_eq_odds_ratio = min(tpr_ratio, fpr_ratio)
+        tpr_difference = abs(group_1_tpr-group_2_tpr)
+        fpr_difference = abs(group_1_fpr-group_2_fpr)
+        manual_eq_odds_difference = max((tpr_difference, fpr_difference))
+
+        eq_odds_ratio = equalized_odds_ratio(filtered_df['y_true'], filtered_df['y_pred'], sensitive_features=filtered_df['protected_attributes'])
+        eq_odds_difference = equalized_odds_difference(filtered_df['y_true'], filtered_df['y_pred'], sensitive_features=filtered_df['protected_attributes'])
+        #######################
+
+        pairwise_results.append({
+            'Group 1': group_val_1,
+            'Group 2': group_val_2,
+            'Selection Rate 1': sr1,
+            'Selection Rate 2': sr2,
+            'Pairwise DP Ratio': DP_ratio,
+            'Pairwise DP Difference': DP_diff,
+            'Pairwise Eq Odds Ratio': eq_odds_ratio,
+            'Pairwise Eq Odds Difference': eq_odds_difference
+        })
+
+    return pairwise_results
+
+def get_one_vs_rest_metrics(y_true, y_pred, sensitive_features):
+    df = pd.DataFrame({
+        'y_true': y_true,
+        'y_pred': y_pred,
+        'protected_attributes': sensitive_features
+    })
+
+    unique_group_values = (df['protected_attributes'].unique())
+    unique_group_values = [x for x in unique_group_values if str(x) != 'nan' ]
+
+    print(f" Unique groups for in vs out: {unique_group_values}")
+
+    one_vs_rest_results = []
+
+    for target_group_value in unique_group_values:
+        target_df = df[df['protected_attributes'] == target_group_value]
+        rest_df = df[df['protected_attributes'] != target_group_value]
+
+        target_filtered_attribute = np.where(df['protected_attributes'] == target_group_value, 1, 0)
+
+        #######################
+        # Calculation for Demographic Parity Ratio and Difference
+        target_sr = selection_rate(target_df['y_true'], target_df['y_pred'])
+        rest_sr = selection_rate(rest_df['y_true'], rest_df['y_pred'])
+
+        manual_DP_ratio = min(target_sr, rest_sr)/max(target_sr, rest_sr) if max(target_sr, rest_sr) > 0 else 0
+        manual_DP_diff = abs(target_sr-rest_sr)
+
+        DP_ratio = demographic_parity_ratio(df['y_true'], df['y_pred'], sensitive_features=target_filtered_attribute)
+        DP_diff = demographic_parity_difference(df['y_true'], df['y_pred'], sensitive_features=target_filtered_attribute)
+        #######################
+
+        #######################
+        # Calculation for Equalized Odds Ratio and Difference
+        target_tpr = true_positive_rate(target_df['y_true'], target_df['y_pred'], pos_label=1)
+        target_fpr = false_positive_rate(target_df['y_true'], target_df['y_pred'], pos_label=1)
+        target_tnr = true_negative_rate(target_df['y_true'], target_df['y_pred'], pos_label=1)
+        target_fnr = false_negative_rate(target_df['y_true'], target_df['y_pred'], pos_label=1)
+
+        rest_tpr = true_positive_rate(rest_df['y_true'], rest_df['y_pred'], pos_label=1)
+        rest_fpr = false_positive_rate(rest_df['y_true'], rest_df['y_pred'], pos_label=1)
+        rest_tnr = true_negative_rate(rest_df['y_true'], rest_df['y_pred'], pos_label=1)
+        rest_fnr = false_negative_rate(rest_df['y_true'], rest_df['y_pred'], pos_label=1)
+
+        print("*"*40)
+        print(f"TARGET: {target_group_value} out of {target_df['y_pred'].shape[0]}")
+        print(f"{target_group_value} True positives: {((target_df['y_true'] == 1) & (target_df['y_pred'] == 1)).sum()} TRUE POSITIVE RATE: {target_tpr}")
+        print(f"{target_group_value} False positives: {((target_df['y_true'] == 0) & (target_df['y_pred'] == 1)).sum()} FALSE POSITIVE RATE: {target_fpr}")
+        print(f"{target_group_value} True Negatives: {((target_df['y_true'] == 0) & (target_df['y_pred'] == 0)).sum()} TRUE NEGATIVE RATE: {target_tnr}")
+        print(f"{target_group_value} False Negatives: {((target_df['y_true'] == 1) & (target_df['y_pred'] == 0)).sum()} FALSE NEGATIVE RATE: {target_fnr}")
+
+        print(f"REST out of {rest_df['y_pred'].shape[0]}")
+        print(f"REST True positives: {((rest_df['y_true'] == 1) & (rest_df['y_pred'] == 1)).sum()} TRUE POSITIVE RATE: {rest_tpr}")
+        print(f"REST False positives: {((rest_df['y_true'] == 0) & (rest_df['y_pred'] == 1)).sum()} FALSE POSITIVE RATE: {rest_fpr}")
+        print(f"REST True Negatives: {((rest_df['y_true'] == 0) & (rest_df['y_pred'] == 0)).sum()} TRUE NEGATIVE RATE: {rest_tnr}")
+        print(f"REST False Negatives: {((rest_df['y_true'] == 1) & (rest_df['y_pred'] == 1)).sum()} FALSE NEGATIVE RATE: {rest_fnr}")
+        print("*"*40)
+        print("\n")
+
+        eq_odds_ratio = equalized_odds_ratio(df['y_true'], df['y_pred'], sensitive_features=target_filtered_attribute)
+        eq_odds_difference = equalized_odds_difference(df['y_true'], df['y_pred'], sensitive_features=target_filtered_attribute)
+        #######################
+
+        one_vs_rest_results.append({
+            'Target Group': target_group_value,
+            'Target Selection Rate': target_sr,
+            'Rest Selection Rate': rest_sr,
+            'One Vs Rest DP Ratio': DP_ratio,
+            'One Vs Rest DP Difference': DP_diff,
+            'One Vs Rest Eq Odds Ratio': eq_odds_ratio,
+            'One Vs Rest Eq Odds Difference': eq_odds_difference,
+        })
+
+    return one_vs_rest_results
+
+def reject_option_postprocess(
+    proba_pos,
+    base_pred,
+    sensitive_attr,
+    theta=0.5,
+    margin=0.1,
+    favorable_label=1,
+    unfavorable_label=0,
+    protected_values=None
+):
+    """
+    Simple reject-option classification:
+    - Use base_pred outside [theta - margin, theta + margin]
+    - Inside that band:
+        * protected samples -> favorable_label
+        * non-protected samples -> unfavorable_label
+    """
+    proba_pos = np.asarray(proba_pos)
+    base_pred = np.asarray(base_pred).copy()
+    sensitive_attr_series = pd.Series(sensitive_attr)
+
+    if protected_values is None:
+        majority_val = sensitive_attr_series.mode()[0]
+        protected_mask = sensitive_attr_series != majority_val
+    else:
+        protected_mask = sensitive_attr_series.isin(list(protected_values))
+
+    protected_mask = protected_mask.to_numpy()
+    distance = np.abs(proba_pos - theta)
+    in_band = distance <= margin
+
+    mask_protected_band = in_band & protected_mask
+    base_pred[mask_protected_band] = favorable_label
+
+    mask_nonprotected_band = in_band & (~protected_mask)
+    base_pred[mask_nonprotected_band] = unfavorable_label
+
+    return base_pred
+
+
+def main():
+    # fetch dataset
+    # diabetes_130_us_hospitals_for_years_1999_2008 = fetch_ucirepo(id=296)
+
+    # # data (as pandas dataframes)
+    # X_original = diabetes_130_us_hospitals_for_years_1999_2008.data.features
+    # y = diabetes_130_us_hospitals_for_years_1999_2008.data.targets
+    df = pd.read_csv('diabetic_data.csv', na_values=['?', 'b', 'e', 's', 't']) 
+
+    X_original = df.copy()
+
+    if 'readmitted' in df.columns:
+        y = df[['readmitted']]
+    le = LabelEncoder()
+    scaler = StandardScaler()
+    oe_encoder = OneHotEncoder(sparse_output=False)
+
+    # dropping weight as a protected attribute because it is sparse
+    # for features, i am dropping payer_code, diag_2, diag_3 because they are sparse
+    X_df = X_original.drop(['change', 'diabetesMed', 'weight', 'payer_code', 'diag_2','diag_3'], axis=1)
+
+    protected_series = {'race': X_df['race'].copy(), 'gender': X_df['gender'].copy(), 'age': X_df['age'].copy()}
+
+    categorical_columns = X_df.select_dtypes(include=['object']).columns.tolist()
+    numerical_columns = X_df.select_dtypes(include=['number']).columns.tolist()
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ('num', StandardScaler(), numerical_columns),
+            ('cat', OneHotEncoder(sparse_output=True, handle_unknown='ignore'), categorical_columns)
+        ])
+
+    X_preprocessed = preprocessor.fit_transform(X_df)
+    print(f"Preprocessed shape: {X_preprocessed.shape}")
+
+    # get the values for the target columns.
+    y_change = (X_original['change'] == 'Ch').values
+    y_diabetesMed = (X_original['diabetesMed'] == 'Yes').values
+
+    print(f"ENCODING CHANGE AND DIABETES. OF TYPES: {type(y_change[0].item())} AND  {type(y_diabetesMed[0].item())} RESPECTIVELY")
+    
+    index_array = np.arange(X_preprocessed.shape[0])
+
+    # IMPUTE MISSING VALUES BEFORE TRAIN/TEST SPLIT 
+    imputer = SimpleImputer(strategy='mean')
+    X_preprocessed_dense = imputer.fit_transform(X_preprocessed)
+
+    X_train, X_test, Y_change_train, Y_change_test, Y_diabetesMed_train, Y_diabetesMed_test, train_indices, test_indices = train_test_split(
+        X_preprocessed_dense,
+        y_change,
+        y_diabetesMed,
+        index_array,
+        test_size=.3,
+        random_state=42
+    )
+
+    sensitive_train = {attr: vals.iloc[train_indices].reset_index(drop=True)
+                       for attr, vals in protected_series.items()}
+    sensitive_test = {attr: vals.iloc[test_indices].reset_index(drop=True)
+                      for attr, vals in protected_series.items()}
+
+    # =========================================================================
+    # NEURAL NETWORK MODELS (MLPClassifier)
+    # =========================================================================
+    start = time.time()
+    
+    # CHANGED: Using MLPClassifier instead of LogisticRegression
+    # Using 2 hidden layers (100 neurons, 50 neurons)
+    changeNN = MLPClassifier(
+        hidden_layer_sizes=(100, 50),
+        activation='relu',
+        solver='adam',
+        max_iter=500, # Increased iterations for convergence
+        random_state=42
+    )
+    
+    # target with med change
+    changeNN.fit(X_train, Y_change_train)
+    changePredictions = changeNN.predict(X_test)
+    changeProba = changeNN.predict_proba(X_test)[:, 1]
+    changeNNAccuracy = accuracy_score(changePredictions, Y_change_test)
+    changeTime = time.time() - start
+
+    # target with diabetes meds
+    diabetesMedNN = MLPClassifier(
+        hidden_layer_sizes=(100, 50),
+        activation='relu',
+        solver='adam',
+        max_iter=500, # Increased iterations for convergence
+        random_state=42
+    )
+    
+    start = time.time()
+    diabetesMedNN.fit(X_train, Y_diabetesMed_train)
+    diabetesMedPredictions = diabetesMedNN.predict(X_test)
+    diabetesMedProba = diabetesMedNN.predict_proba(X_test)[:, 1]
+    diabetesMedNNAccuracy = accuracy_score(diabetesMedPredictions, Y_diabetesMed_test)
+    diabetesMedTime = time.time() - start
+
+    print("Unique diabetesMedPredictions predictions:", np.unique(diabetesMedPredictions))
+
+    print(f"PREDICTION SHAPE {diabetesMedPredictions.shape[0]}")
+    assert(X_test.shape[0] == diabetesMedPredictions.shape[0])
+    assert(X_test.shape[0] == changePredictions.shape[0])
+
+    print("Unique changePredictions predictions:", np.unique(changePredictions))
+    print("Prediction diabetesMedPredictions distribution:", pd.Series(diabetesMedPredictions).value_counts())
+    print("Prediction changePredictions distribution:", pd.Series(changePredictions).value_counts())
+    
+
+    ##############################################################################
+    # FAIRNESS STEPS
+    # Reject-option style post-processing:
+
+    X_train_dense = X_train  
+    X_test_dense = X_test
+
+    fairness_optimized_predictions = {}
+    fairness_optimized_accuracy = {}
+
+    constraint_strategies = ['demographic_parity', 'equalized_odds']
+
+    # MAIN LOOP
+    for attr in sensitive_train:
+        curr_sensitive_train_col = sensitive_train[attr]
+        curr_sensitive_test_col = sensitive_test[attr]
+        
+        if attr == 'gender':
+            mode_value = curr_sensitive_train_col.mode()[0]
+            print(f"REPLACING Unknown/Invalid with mode {mode_value}")
+            curr_sensitive_train_col.replace('Unknown/Invalid', mode_value, inplace=True)
+            curr_sensitive_test_col.replace('Unknown/Invalid', mode_value, inplace=True)
+            sensitive_test[attr] = curr_sensitive_test_col
+        
+        # if there are nans in the sensitive attribute column, just fill with most common one
+        if (curr_sensitive_train_col.isna().any() or curr_sensitive_test_col.isna().any()):
+            mode_value = curr_sensitive_train_col.mode()[0]
+            print(f"MODE VALUE FOR ATTR {attr} IS {mode_value}")
+            curr_sensitive_train_col = curr_sensitive_train_col.fillna(mode_value)
+            curr_sensitive_test_col = curr_sensitive_test_col.fillna(mode_value)
+
+        print(f"dense x train rows: {X_train_dense.shape[0]}")
+        print(f"num rows for attr {attr}: {curr_sensitive_train_col.shape[0]}")
+        assert(X_train_dense.shape[0] == curr_sensitive_train_col.shape[0])
+        assert(X_train_dense.shape[0] == Y_change_train.shape[0])
+
+        # Convert test sensitive attr to numpy array
+        if hasattr(curr_sensitive_test_col, 'toarray'):
+            curr_sensitive_test_values = curr_sensitive_test_col.toarray().ravel()
+        else:
+            curr_sensitive_test_values = curr_sensitive_test_col.values
+
+        print(f"Y_change_train is type: {type(Y_change_train[0].item())}")
+        
+        for curr_strategy in constraint_strategies:
+            if curr_strategy == 'demographic_parity':
+                margin_val = 0.15
+            else:
+                margin_val = 0.10
+
+            ######################### CHANGE NN + ROC #########################
+            fair_changePredictions = reject_option_postprocess(
+                proba_pos=changeProba,
+                base_pred=changePredictions,
+                sensitive_attr=curr_sensitive_test_values,
+                theta=0.5,
+                margin=margin_val,
+                favorable_label=1,
+                unfavorable_label=0,
+                protected_values=None 
+            )
+
+            fairness_optimized_predictions[f"{attr}_{curr_strategy}_change"] = fair_changePredictions
+            fairness_optimized_accuracy[f"{attr}_{curr_strategy}_change"] = accuracy_score(
+                fair_changePredictions, Y_change_test
+            )
+
+            print(f"FINISHED ROC POST-PROCESSING FOR ATTR {attr} with strategy {curr_strategy} for Med Change")
+
+            ######################### DIABETES MED NN + ROC ###################
+            fair_diabetesPredictions = reject_option_postprocess(
+                proba_pos=diabetesMedProba,
+                base_pred=diabetesMedPredictions,
+                sensitive_attr=curr_sensitive_test_values,
+                theta=0.5,
+                margin=margin_val,
+                favorable_label=1,
+                unfavorable_label=0,
+                protected_values=None
+            )
+
+            fairness_optimized_predictions[f"{attr}_{curr_strategy}_med_given"] = fair_diabetesPredictions
+            fairness_optimized_accuracy[f"{attr}_{curr_strategy}_med_given"] = accuracy_score(
+                fair_diabetesPredictions, Y_diabetesMed_test
+            )
+
+            print(f"FINISHED ROC POST-PROCESSING FOR ATTR {attr} with strategy {curr_strategy} for Med Given")
+
+    ##############################################################################
+    print(fairness_optimized_predictions)
+    assert(len(fairness_optimized_predictions) == 12)
+
+    print(fairness_optimized_accuracy)
+    assert(len(fairness_optimized_accuracy) == 12)
+
+    ##############################################################################
+    # FINAL BASE MEASUREMENTS 
+
+    for attr in sensitive_test: # race, age, gender
+        print("="*60)
+        print(f"BASE MEASUREMENT")
+        print("="*60)
+
+        print(f"Sensitive attribute: {attr}")
+        curr_sensitive_col = sensitive_test[attr]
+
+        # calculate pairwise and one vs many comparision for DP ratio, DP difference and Eq Odds for med change
+        print("Calculating for med change: ")
+        pairwise_med_change = pd.DataFrame(get_pairwise_metrics(Y_change_test, changePredictions, curr_sensitive_col))
+        one_vs_rest_med_change = pd.DataFrame(get_one_vs_rest_metrics(Y_change_test, changePredictions, curr_sensitive_col))
+
+        # calculate pairwise and one vs many comparision for DP ratio, DP difference and Eq Odds for diabetes med given
+        print("Calculating for diabetes med given: ")
+        pairwise_diabetes_med_given = pd.DataFrame(get_pairwise_metrics(Y_diabetesMed_test, diabetesMedPredictions, curr_sensitive_col))
+        one_vs_rest_diabetes_med_given = pd.DataFrame(get_one_vs_rest_metrics(Y_diabetesMed_test, diabetesMedPredictions, curr_sensitive_col))
+
+        med_change_results = pd.concat([pairwise_med_change, one_vs_rest_med_change], ignore_index=True, sort=False)
+        diabetes_med_given_results = pd.concat([pairwise_diabetes_med_given, one_vs_rest_diabetes_med_given], ignore_index=True, sort=False)
+
+        # CHANGED: Updated filenames to denote neural_network
+        med_change_filename = f"base_neural_network_{attr}_medchange.csv"
+        med_change_results.to_csv(med_change_filename, index=False)
+
+        diabetes_med_given_filename = f"base_neural_network_{attr}_diabetesmed.csv"
+        diabetes_med_given_results.to_csv(diabetes_med_given_filename, index=False)
+        print("="*60)
+
+    print("-"*50)
+    print("BASE ACCURACIES (NEURAL NETWORK)")
+    print("-"*50)
+    print(f"CHANGE TIME: {changeTime}")
+    print(f"Accuracy of change Neural Network: {changeNNAccuracy}")
+
+    print(f"DIABETES MED TIME: {diabetesMedTime}")
+    print(f"Accuracy of diabetesMed Neural Network: {diabetesMedNNAccuracy}")
+
+    ##############################################################################
+    # FINAL FAIRNESS ADJUSTED MEASUREMENTS 
+
+    strategies = ["demographic_parity", "equalized_odds"]
+
+    print("="*60)
+    print(f"FAIRNESS ADJUSTED MEASUREMENT (REJECT-OPTION POST-PROCESSING)")
+    print("="*60)
+    for attr in sensitive_train:
+        curr_fairness_sensitive_col = sensitive_test[attr]
+
+        for curr_strategy in strategies:
+            print(f"Sensitive attribute: {attr} and Current Strategy: {curr_strategy}")
+
+            attr_strategy_change_str = f"{attr}_{curr_strategy}_change"
+            attr_strategy_med_given_str = f"{attr}_{curr_strategy}_med_given"
+
+            assert(len(Y_change_test) == len(fairness_optimized_predictions[attr_strategy_change_str]))
+            assert(len(Y_diabetesMed_test) == len(fairness_optimized_predictions[attr_strategy_med_given_str]))
+        
+            # calculate pairwise and one vs many comparision for DP ratio, DP difference and Eq Odds for med change
+
+            print(f"Calculating: {attr_strategy_change_str}")
+
+            pairwise_med_change = pd.DataFrame(
+                get_pairwise_metrics(
+                    Y_change_test,
+                    fairness_optimized_predictions[attr_strategy_change_str],
+                    curr_fairness_sensitive_col
+                )
+            )
+
+            one_vs_rest_med_change = pd.DataFrame(
+                get_one_vs_rest_metrics(
+                    Y_change_test,
+                    fairness_optimized_predictions[attr_strategy_change_str],
+                    curr_fairness_sensitive_col
+                )
+            )
+
+            # calculate pairwise and one vs many comparision for DP ratio, DP difference and Eq Odds for diabetes med given
+            print(f"Calculating: {attr_strategy_med_given_str}")
+
+            pairwise_diabetes_med_given = pd.DataFrame(
+                get_pairwise_metrics(
+                    Y_diabetesMed_test,
+                    fairness_optimized_predictions[attr_strategy_med_given_str],
+                    curr_fairness_sensitive_col
+                )
+            )
+
+            one_vs_rest_diabetes_med_given = pd.DataFrame(
+                get_one_vs_rest_metrics(
+                    Y_diabetesMed_test,
+                    fairness_optimized_predictions[attr_strategy_med_given_str],
+                    curr_fairness_sensitive_col
+                )
+            )
+
+            med_change_results = pd.concat([pairwise_med_change, one_vs_rest_med_change], ignore_index=True, sort=False)
+            diabetes_med_given_results = pd.concat([pairwise_diabetes_med_given, one_vs_rest_diabetes_med_given], ignore_index=True, sort=False)
+
+            # CHANGED: Updated filenames to denote neural_network
+            med_change_filename = f"neural_network_{attr_strategy_change_str}.csv"
+            med_change_results.to_csv(med_change_filename, index=False)
+
+            diabetes_med_given_filename = f"neural_network_{attr_strategy_med_given_str}.csv"
+            diabetes_med_given_results.to_csv(diabetes_med_given_filename, index=False)
+
+            print("="*60)
+
+if __name__ == "__main__":
+  main()
