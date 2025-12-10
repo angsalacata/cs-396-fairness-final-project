@@ -1,0 +1,15 @@
+Description,Accuracy
+Accuracy for medication change prediction Base logistic regression,0.9990173599737963
+Accuracy for diabetes med prescribed prediction Base logistic regression,0.9997707173272191
+Accuracy for medication change prediction logistic control for race -- demographic parity,0.998689813298395
+Accuracy for diabetes med prescribed prediction logistic control for race -- demographic parity,0.9995086799868982
+Accuracy for medication change prediction logistic control for race -- equalized odds,0.9988208319685555
+Accuracy for diabetes med prescribed prediction logistic control for race -- equalized odds,0.9995741893219784
+Accuracy for medication change prediction logistic control for gender -- demographic parity,0.9988535866360957
+Accuracy for diabetes med prescribed prediction logistic control for gender -- demographic parity,0.9995741893219784
+Accuracy for medication change prediction logistic control for gender -- equalized odds,0.9989190959711759
+Accuracy for diabetes med prescribed prediction logistic control for gender -- equalized odds,0.9996724533245988
+Accuracy for medication change prediction logistic control for age -- demographic parity,0.9990828693088765
+Accuracy for diabetes med prescribed prediction logistic control for age -- demographic parity,0.9996396986570586
+Accuracy for medication change prediction logistic control for age -- equalized odds,0.9990501146413364
+Accuracy for diabetes med prescribed prediction logistic control for age -- equalized odds,0.9996724533245988

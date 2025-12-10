@@ -605,7 +605,66 @@ def main():
 
       print("="*60)
 
+    '''
+    Accuracies
+    '''
+    summary_rows = []
+
+
+    # 1–2: Base accuracies
+    summary_rows.append({
+        "Description": "Accuracy for medication change prediction Base logistic regression",
+        "Accuracy": changeLogRegAccuracy
+    })
+
+    summary_rows.append({
+        "Description": "Accuracy for diabetes med prescribed prediction Base logistic regression",
+        "Accuracy": diabetesMedLogRegAccuracy
+    })
+
+    # 3–14: Fair models – by protected attribute and strategy
+    ordered_attrs = ["race", "gender", "age"]
+    strategy_text = {
+        "demographic_parity": "demographic parity",
+        "equalized_odds": "equalized odds",
+    }
+
+    for attr in ordered_attrs:
+        for strat_key, strat_label in strategy_text.items():
+
+            # Medication change
+            key_change = f"{attr}_{strat_key}_change"
+            metric_label_change = (
+                f"Accuracy for medication change prediction logistic control for "
+                f"{attr} -- {strat_label}"
+            )
+            summary_rows.append({
+                "Description": metric_label_change,
+                "Accuracy": fairness_optimized_accuracy[key_change]
+            })
+
+            # Diabetes med prescribed
+            key_med = f"{attr}_{strat_key}_med_given"
+            metric_label_med = (
+                f"Accuracy for diabetes med prescribed prediction logistic control for "
+                f"{attr} -- {strat_label}"
+            )
+            summary_rows.append({
+                "Description": metric_label_med,
+                "Accuracy": fairness_optimized_accuracy[key_med]
+            })
+
+    # Make sure we have 14 rows: 2 base + 12 fairness-adjusted
+    summary_df = pd.DataFrame(summary_rows)
+    assert summary_df.shape[0] == 14
+
+    # Save to CSV (2 columns: Description, Accuracy)
+    summary_filename = "logistic_all_accuracies.csv"
+    summary_df.to_csv(summary_filename, index=False)
+    print(f"Saved summary accuracies to {summary_filename}")
+
   ##############################################################################
+
 
 if __name__ == "__main__":
   main()
