@@ -1,0 +1,15 @@
+Description,Accuracy
+Accuracy for medication change prediction Base Neural Network,0.9999017359973796
+Accuracy for diabetes med perscribed prediction Base Neural Network,0.9999672453324598
+Accuracy for medication change prediction Neural Network control for race -- demographic parity,0.9999017359973796
+Accuracy for diabetes med perscribed prediction Neural Network control for race -- demographic parity,0.9999672453324598
+Accuracy for medication change prediction Neural Network control for race -- equalized odds,0.9999017359973796
+Accuracy for diabetes med perscribed prediction Neural Network control for race -- equalized odds,0.9999672453324598
+Accuracy for medication change prediction Neural Network control for gender -- demographic parity,0.9999344906649198
+Accuracy for diabetes med perscribed prediction Neural Network control for gender -- demographic parity,0.9999672453324598
+Accuracy for medication change prediction Neural Network control for gender -- equalized odds,0.9999344906649198
+Accuracy for diabetes med perscribed prediction Neural Network control for gender -- equalized odds,0.9999672453324598
+Accuracy for medication change prediction Neural Network control for age -- demographic parity,0.9999017359973796
+Accuracy for diabetes med perscribed prediction Neural Network control for age -- demographic parity,0.9999672453324598
+Accuracy for medication change prediction Neural Network control for age -- equalized odds,0.9999017359973796
+Accuracy for diabetes med perscribed prediction Neural Network control for age -- equalized odds,0.9999672453324598
